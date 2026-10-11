@@ -8,7 +8,6 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.os.PowerManager
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -71,7 +70,8 @@ import dev.opencodelab.pocket.api.OpenCodeApi
 import dev.opencodelab.pocket.api.OpenCodeApiException
 import dev.opencodelab.pocket.api.OpenCodeSession
 import dev.opencodelab.pocket.runtime.AgentMonitorService
-import dev.opencodelab.pocket.runtime.TermuxBridge
+import dev.opencodelab.pocket.runtime.RuntimeManager
+import dev.opencodelab.pocket.runtime.ServeHolder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -117,7 +117,7 @@ private fun OpenCodePocketScreen() {
     var submitting by remember { mutableStateOf(false) }
     var activeSessionId by remember { mutableStateOf<String?>(prefs.getString("session_id", null)) }
     var draft by remember { mutableStateOf("") }
-    var workdir by remember { mutableStateOf(prefs.getString("workdir", TermuxBridge.DEFAULT_WORKDIR) ?: TermuxBridge.DEFAULT_WORKDIR) }
+    var workdir by remember { mutableStateOf(prefs.getString("workdir", null) ?: RuntimeManager.defaultWorkDir(context).absolutePath) }
     var showSettings by remember { mutableStateOf(false) }
     var showSessions by remember { mutableStateOf(false) }
     var showModels by remember { mutableStateOf(false) }
@@ -189,33 +189,34 @@ private fun OpenCodePocketScreen() {
             delay(1_700)
             ticks++
             try {
-                val status = withContext(Dispatchers.IO) { api.sessionStatus(id) }.lowercase()
+                // v2: 会话在 active 表里 = 仍在忙
+                val busy = withContext(Dispatchers.IO) { api.isSessionBusy(id) }
                 failedPolls = 0
-                if (status == "busy" || status == "running" || status == "retry") {
+                if (busy) {
                     sawBusy = true
                     idleCount = 0
                 } else if (sawBusy) {
                     idleCount++
                     if (idleCount >= 2) submitting = false
                 } else if (ticks > 18) {
-                    // Fallback when the server finishes before the first status poll.
+                    // Fallback：server 可能在首次轮询前已完成，看消息是否 complete
                     val currentMessages = withContext(Dispatchers.IO) { api.listMessages(id) }
                     if (currentMessages.lastOrNull { it.role == "assistant" }?.completed == true) submitting = false
                 }
                 reloadMessages(id)
             } catch (_: Exception) {
                 failedPolls++
-                statusText = "连接暂时中断；任务是否继续请检查 Termux 通知"
+                statusText = "连接暂时中断；任务是否继续请稍后刷新查看"
                 if (failedPolls >= 8) {
                     submitting = false
-                    errorText = "连续多次无法读取 OpenCode 状态。任务数据仍保存在 OpenCode 会话中，请检查 Termux 服务后重新连接。"
+                    errorText = "连续多次无法读取 OpenCode 状态。任务数据仍保存在会话中，请重新连接后刷新。"
                 }
             }
         }
     }
 
     suspend fun createNewSession(title: String): String {
-        val session = withContext(Dispatchers.IO) { api.createSession(title) }
+        val session = withContext(Dispatchers.IO) { api.createSession(title, selectedModel) }
         activeSessionId = session.id
         prefs.edit().putString("session_id", session.id).apply()
         sessions = withContext(Dispatchers.IO) { api.listSessions() }
@@ -228,95 +229,61 @@ private fun OpenCodePocketScreen() {
             loading = true
             errorText = ""
             try {
-                val currentVersion = withContext(Dispatchers.IO) { api.health() }
-                connected = true
-                serverVersion = currentVersion
-                activePath = withContext(Dispatchers.IO) { api.currentPath() }
-                sessions = withContext(Dispatchers.IO) { api.listSessions() }
-                models = withContext(Dispatchers.IO) { api.listModels() }
-                restoreSavedModel()
-                statusText = if (serverPassword.isNullOrBlank()) {
-                    "已连接 · 当前 Server 未启用密码保护"
-                } else {
-                    "已连接 · API 密码保护已启用 · $activePath"
+                // 1. 先试已有服务（App 上次启动的 serve 可能还在）
+                try {
+                    val currentVersion = withContext(Dispatchers.IO) { api.health() }
+                    connected = true
+                    serverVersion = currentVersion
+                    activePath = withContext(Dispatchers.IO) { api.currentPath() }
+                    sessions = withContext(Dispatchers.IO) { api.listSessions() }
+                    models = withContext(Dispatchers.IO) { api.listModels() }
+                    restoreSavedModel()
+                    statusText = "已连接 · $activePath"
+                    val savedId = activeSessionId
+                    if (savedId != null && sessions.any { it.id == savedId }) reloadMessages(savedId)
+                    return@launch
+                } catch (_: Exception) {
+                    // 无服务，继续走启动流程
                 }
-                if (serverPassword.isNullOrBlank()) {
-                    errorText = "安全提醒：当前 Server 没有 API 密码保护。同一台手机上的其他应用也可能尝试连接它；建议停止该进程后由 App 启动受保护的服务。"
-                }
-                if (activePath.isNotBlank() && workdir.trim() != activePath && workdir.trim() != "~/") {
-                    errorText = (if (errorText.isNotBlank()) "$errorText\n\n" else "") + "当前服务已在 $activePath 运行；修改项目目录不会切换现有进程。请先在 Termux 停止旧服务，再重新启动。"
-                }
-                val savedId = activeSessionId
-                if (savedId != null && sessions.any { it.id == savedId }) reloadMessages(savedId)
-            } catch (_: Exception) {
-                // If an old saved password no longer matches, allow explicit connection to a manually
-                // started no-password server, but warn the user instead of pretending it is protected.
-                if (!serverPassword.isNullOrBlank()) {
-                    val openApi = OpenCodeApi()
+                // 2. 检查/安装内置运行时
+                if (!RuntimeManager.isInstalled(context)) {
+                    statusText = "首次启动，正在准备内置运行时…"
                     try {
-                        val version = withContext(Dispatchers.IO) { openApi.health() }
-                        serverPassword = null
-                        prefs.edit().remove("server_password").apply()
-                        connected = true
-                        serverVersion = version
-                        activePath = withContext(Dispatchers.IO) { openApi.currentPath() }
-                        sessions = withContext(Dispatchers.IO) { openApi.listSessions() }
-                        models = withContext(Dispatchers.IO) { openApi.listModels() }
-                        restoreSavedModel()
-                        statusText = "已连接 · 当前 Server 未启用密码保护"
-                        errorText = "安全提醒：当前服务没有 API 密码保护。同一台手机上的其他应用也可能尝试访问它。建议在 Termux 停止该服务，再点启动按钮由 App 启动受保护的服务。"
-                        val savedId = activeSessionId
-                        if (savedId != null && sessions.any { it.id == savedId }) {
-                            val loaded = withContext(Dispatchers.IO) { openApi.listMessages(savedId) }
-                            messages.clear(); messages.addAll(loaded)
+                        withContext(Dispatchers.IO) {
+                            RuntimeManager.install(context) { _, stage ->
+                                statusText = stage
+                            }
                         }
-                        loading = false
+                    } catch (e: Exception) {
+                        errorText = "运行时准备失败：${e.message}。请检查网络后重试。"
                         return@launch
-                    } catch (_: Exception) {
-                        // Continue with normal runtime checks and attempt to start a protected server.
                     }
                 }
-                if (!TermuxBridge.isInstalled(context)) {
-                    errorText = "没有检测到 Termux。请安装 Termux 与 Android/Bionic 版 OpenCode 后再连接。"
-                    loading = false
+                // 3. 检查模型配置
+                if (!RuntimeManager.hasConfig(context)) {
+                    errorText = "还没有配置模型。请在设置里填写 OpenRouter API Key。"
+                    showSettings = true
                     return@launch
                 }
-                val granted = ContextCompat.checkSelfPermission(context, "com.termux.permission.RUN_COMMAND") == PackageManager.PERMISSION_GRANTED
-                if (!granted) {
-                    errorText = "请先在系统设置中给 OpenCode Pocket 授予“在 Termux 环境中运行命令”权限，并在 Termux 的 termux.properties 中启用 allow-external-apps。"
-                    loading = false
-                    return@launch
-                }
-                val launchPassword = serverPassword ?: (java.util.UUID.randomUUID().toString().replace("-", "") + java.util.UUID.randomUUID().toString().replace("-", ""))
-                serverPassword = launchPassword
-                prefs.edit().putString("server_password", launchPassword).apply()
+                // 4. 启动 serve
+                statusText = "正在启动本地 OpenCode…"
+                val launchPassword = serverPassword
+                    ?: RuntimeManager.newPassword().also {
+                        serverPassword = it
+                        prefs.edit().putString("server_password", it).apply()
+                    }
                 val protectedApi = OpenCodeApi(password = launchPassword)
                 try {
-                    TermuxBridge.runBackgroundCommand(
-                        context,
-                        "${TermuxBridge.PREFIX}/bin/termux-wake-lock",
-                        workdir = workdir,
-                        label = "OpenCode Pocket 保持唤醒",
-                        description = "在本地 OpenCode 任务期间请求 Termux CPU 唤醒锁。"
-                    )
-                    TermuxBridge.runBackgroundCommand(
-                        context,
-                        "${TermuxBridge.PREFIX}/bin/env",
-                        arrayOf(
-                            "OPENCODE_SERVER_USERNAME=opencode",
-                            "OPENCODE_SERVER_PASSWORD=$launchPassword",
-                            "${TermuxBridge.PREFIX}/bin/opencode",
-                            "serve", "--hostname", "127.0.0.1", "--port", "4096"
-                        ),
-                        workdir,
-                        "启动受密码保护的本地 OpenCode Server",
-                        "绑定 127.0.0.1:4096，使用随机 API 密码供 OpenCode Pocket 本机访问。"
-                    )
+                    val workDir = java.io.File(workdir).apply { mkdirs() }
+                    val proc = withContext(Dispatchers.IO) {
+                        RuntimeManager.startServe(context, workDir, launchPassword)
+                    }
+                    ServeHolder.process = proc
                 } catch (e: Exception) {
-                    errorText = "通过 Termux 启动失败：${e.message ?: e.javaClass.simpleName}。请检查 RUN_COMMAND 权限和 allow-external-apps。"
-                    loading = false
+                    errorText = "启动失败：${e.message ?: e.javaClass.simpleName}"
                     return@launch
                 }
+                // 5. 轮询等 serve 就绪
                 var started = false
                 for (attempt in 0 until 20) {
                     delay(900)
@@ -328,7 +295,7 @@ private fun OpenCodePocketScreen() {
                         sessions = withContext(Dispatchers.IO) { protectedApi.listSessions() }
                         models = withContext(Dispatchers.IO) { protectedApi.listModels() }
                         restoreSavedModel()
-                        statusText = "本地 OpenCode 已启动并启用密码保护 · $activePath"
+                        statusText = "本地 OpenCode 已启动 · $activePath"
                         errorText = ""
                         val savedId = activeSessionId
                         if (savedId != null && sessions.any { it.id == savedId }) {
@@ -338,15 +305,16 @@ private fun OpenCodePocketScreen() {
                         started = true
                         break
                     } catch (_: Exception) {
-                        // Keep polling the loopback endpoint while Termux starts the server.
+                        // 等待 serve 启动
                     }
                 }
                 if (!started) {
                     connected = false
-                    errorText = "已请求 Termux 启动服务，但 18 秒内没有检测到 API。请打开 Termux 检查 opencode serve 的错误日志、RUN_COMMAND 权限和端口 4096。"
+                    errorText = "服务 18 秒内未就绪。请重试，或检查存储空间是否充足。"
                 }
+            } finally {
+                loading = false
             }
-            loading = false
         }
     }
 
@@ -363,7 +331,7 @@ private fun OpenCodePocketScreen() {
             var promptAccepted = false
             try {
                 val sessionId = activeSessionId ?: createNewSession(prompt.take(50))
-                withContext(Dispatchers.IO) { api.sendPrompt(sessionId, prompt, selectedModel) }
+                withContext(Dispatchers.IO) { api.sendPrompt(sessionId, prompt) }
                 promptAccepted = true
                 draft = ""
                 submitting = true
@@ -503,7 +471,7 @@ private fun OpenCodePocketScreen() {
                             Icon(if (submitting) Icons.Default.Stop else Icons.Default.Send, contentDescription = if (submitting) "停止" else "发送", tint = if (draft.isNotBlank() || submitting) Color(0xFF141722) else SoftInk)
                         }
                     }
-                    Text("本地 API：127.0.0.1:4096   ·   后台执行需允许 Termux 与本 App 后台运行", color = SoftInk.copy(alpha = 0.75f), fontSize = 10.sp)
+                    Text("本地 API：127.0.0.1:4096   ·   内置运行时，无需 Termux", color = SoftInk.copy(alpha = 0.75f), fontSize = 10.sp)
                 }
             }
         ) { padding ->
@@ -542,7 +510,7 @@ private fun OpenCodePocketScreen() {
                         Spacer(Modifier.height(22.dp))
                         Text("让 Agent 来处理。", fontSize = 27.sp, fontWeight = FontWeight.SemiBold, color = Ink, lineHeight = 32.sp)
                         Spacer(Modifier.height(8.dp))
-                        Text("直接描述任务。OpenCode 将在当前 Termux 工作目录中读写文件、运行工具，并把真实执行记录返回到聊天里。", color = SoftInk, fontSize = 14.sp, lineHeight = 21.sp)
+                        Text("直接描述任务。OpenCode 将在工作目录中读写文件、运行工具，并把真实执行记录返回到聊天里。", color = SoftInk, fontSize = 14.sp, lineHeight = 21.sp)
                         Spacer(Modifier.height(24.dp))
                         Text("可以从这些任务开始", color = SoftInk, fontSize = 12.sp, fontWeight = FontWeight.Medium)
                         Spacer(Modifier.height(10.dp))
@@ -569,7 +537,7 @@ private fun OpenCodePocketScreen() {
                         Surface(color = Panel.copy(alpha = 0.7f), shape = RoundedCornerShape(14.dp)) {
                             Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
                                 Text("第一次使用？", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                                Text("先在 Termux 安装 Android 适配版 OpenCode，再点右上角连接按钮。当前项目还没有捏造任何模型回复。", color = SoftInk, fontSize = 12.sp, lineHeight = 18.sp)
+                                Text("点右上角连接按钮，App 会自动准备运行时。首次需在设置里填写 OpenRouter Key。", color = SoftInk, fontSize = 12.sp, lineHeight = 18.sp)
                                 TextButton(onClick = { showSettings = true }, contentPadding = PaddingValues(0.dp)) { Text("打开本地运行设置 →", color = Accent) }
                             }
                         }
@@ -591,24 +559,53 @@ private fun OpenCodePocketScreen() {
 
     if (showSettings) {
         var draftWorkdir by remember(workdir) { mutableStateOf(workdir) }
+        var draftKey by remember { mutableStateOf("") }
+        var keySaved by remember { mutableStateOf(RuntimeManager.hasConfig(context)) }
         AlertDialog(
             onDismissRequest = { showSettings = false },
             title = { Text("本地运行设置", color = Ink) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("OpenCode Server 固定监听 127.0.0.1:4096。App 启动的服务会设置随机 API 密码；如果连接到手动启动的无密码服务，会出现安全提醒。", color = SoftInk, fontSize = 12.sp, lineHeight = 17.sp)
+                    Text("内置 OpenCode ${RuntimeManager.RUNTIME_VERSION}，首次启动自动下载运行时（约 65MB）。Server 只监听 127.0.0.1:4096，随机密码保护。", color = SoftInk, fontSize = 12.sp, lineHeight = 17.sp)
                     OutlinedTextField(
                         value = draftWorkdir,
                         onValueChange = { draftWorkdir = it },
-                        label = { Text("Termux 工作目录") },
-                        placeholder = { Text("~/projects/my-app") },
+                        label = { Text("工作目录") },
+                        placeholder = { Text("默认 App 私有目录") },
                         singleLine = true,
                         leadingIcon = { Icon(Icons.Default.FolderOpen, contentDescription = null) }
                     )
-                    Text("此目录只会在启动新服务时使用。若服务已连接，修改目录后需要先在 Termux 终止旧的 opencode serve，再重新启动。", color = SoftInk, fontSize = 11.sp, lineHeight = 16.sp)
+                    Text("修改目录后需重启服务生效（点右上角刷新按钮）。", color = SoftInk, fontSize = 11.sp, lineHeight = 16.sp)
+                    Divider(color = Border)
+                    Text("模型配置 · OpenRouter", color = Ink, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                    if (keySaved) {
+                        Text("已保存 OpenRouter Key（默认 deepseek-chat）。如需更换请重新填写。", color = Success, fontSize = 12.sp)
+                    }
+                    OutlinedTextField(
+                        value = draftKey,
+                        onValueChange = { draftKey = it },
+                        label = { Text("OpenRouter API Key") },
+                        placeholder = { Text("sk-or-v1-…") },
+                        singleLine = true
+                    )
+                    Button(onClick = {
+                        val k = draftKey.trim()
+                        if (k.isBlank()) { errorText = "Key 不能为空" }
+                        else {
+                            try {
+                                RuntimeManager.writeConfig(context, k)
+                                keySaved = true
+                                draftKey = ""
+                                errorText = ""
+                                statusText = "模型已配置，可以连接启动了"
+                            } catch (e: Exception) { errorText = "保存失败：${e.message}" }
+                        }
+                    }, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = PanelRaised, contentColor = Ink)) {
+                        Text("保存 Key")
+                    }
                     Divider(color = Border)
                     Text("后台运行", color = Ink, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                    Text("任务开始后 App 会使用前台服务与部分唤醒锁；启动本地服务时也会请求 Termux 的 termux-wake-lock。请同时允许 Termux 与本 App 后台运行。", color = SoftInk, fontSize = 12.sp, lineHeight = 17.sp)
+                    Text("任务开始后 App 会使用前台服务与部分唤醒锁保持运行。请允许本 App 后台运行并忽略电池优化。", color = SoftInk, fontSize = 12.sp, lineHeight = 17.sp)
                     Button(onClick = {
                         try {
                             val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).setData(Uri.parse("package:${context.packageName}"))
@@ -627,19 +624,12 @@ private fun OpenCodePocketScreen() {
                         Spacer(Modifier.width(8.dp))
                         Text("打开 OpenCode Pocket 应用权限")
                     }
-                    Button(onClick = {
-                        try { TermuxBridge.openTermuxAppInfo(context) } catch (e: Exception) { errorText = "无法打开 Termux 设置：${e.message}" }
-                    }, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = PanelRaised, contentColor = Ink)) {
-                        Icon(Icons.Default.BatteryChargingFull, contentDescription = null)
-                        Spacer(Modifier.width(8.dp))
-                        Text("打开 Termux 电池与后台设置")
-                    }
-                    Text("还要在 Termux 中将 allow-external-apps 设为 true，并给本 App 授予“在 Termux 环境中运行命令”权限。详情见项目 README。", color = SoftInk, fontSize = 11.sp, lineHeight = 16.sp)
+
                 }
             },
             confirmButton = {
                 TextButton(onClick = {
-                    workdir = draftWorkdir.trim().ifBlank { TermuxBridge.DEFAULT_WORKDIR }
+                    workdir = draftWorkdir.trim().ifBlank { RuntimeManager.defaultWorkDir(context).absolutePath }
                     prefs.edit().putString("workdir", workdir).apply()
                     showSettings = false
                 }) { Text("保存", color = Accent) }
@@ -715,7 +705,7 @@ private fun OpenCodePocketScreen() {
                     if (modelMenuLoading) {
                         Box(Modifier.fillMaxWidth().padding(20.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = Accent) }
                     } else if (models.isEmpty()) {
-                        Text("没有读到模型列表。请先在 Termux 中配置 OpenCode Provider，并确认服务已连接。", color = SoftInk, fontSize = 12.sp, modifier = Modifier.padding(vertical = 14.dp))
+                        Text("没有读到模型列表。请确认服务已连接（模型来自内置运行时）。", color = SoftInk, fontSize = 12.sp, modifier = Modifier.padding(vertical = 14.dp))
                     } else {
                         LazyColumn {
                             items(models, key = { "${it.providerID}/${it.modelID}" }) { model ->

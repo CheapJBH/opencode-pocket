@@ -52,13 +52,12 @@ class AgentMonitorService : Service() {
             var idleSamples = 0
             var attempts = 0
             var errorCount = 0
-            var lastStatus = "unknown"
             while (isActive && attempts < MAX_POLLS) {
                 attempts++
                 try {
-                    lastStatus = api.sessionStatus(sessionId).lowercase()
+                    // v2：会话在 active 表里 = 仍在忙
+                    val busy = api.isSessionBusy(sessionId)
                     errorCount = 0
-                    val busy = lastStatus == "busy" || lastStatus == "running" || lastStatus == "retry"
                     if (busy) {
                         sawBusy = true
                         idleSamples = 0
@@ -66,16 +65,26 @@ class AgentMonitorService : Service() {
                     } else if (sawBusy) {
                         idleSamples++
                         if (idleSamples >= 2) {
-                            updateNotification("OpenCode 任务已结束", "结果已保存在本地 OpenCode 会话中。", ongoing = false)
+                            updateNotification("OpenCode 任务已结束", "结果已保存在本地会话中。", ongoing = false)
                             delay(2_000)
                             stopSelf()
                             return@launch
                         }
-                    } else if (attempts >= INITIAL_WAIT_POLLS && (lastStatus == "idle" || lastStatus == "unknown")) {
-                        updateNotification("OpenCode 任务状态未知", "打开 App 刷新会话；服务未检测到持续运行。", ongoing = false)
-                        delay(2_000)
-                        stopSelf()
-                        return@launch
+                    } else if (attempts >= INITIAL_WAIT_POLLS) {
+                        // 从未见过忙：查一次消息，有 completed 的 assistant 消息也算结束
+                        val msgs = api.listMessages(sessionId, 5)
+                        if (msgs.lastOrNull { it.role == "assistant" }?.completed == true) {
+                            updateNotification("OpenCode 任务已结束", "结果已保存在本地会话中。", ongoing = false)
+                            delay(2_000)
+                            stopSelf()
+                            return@launch
+                        }
+                        if (attempts >= INITIAL_WAIT_POLLS + 6) {
+                            updateNotification("OpenCode 任务状态未知", "打开 App 刷新会话。", ongoing = false)
+                            delay(2_000)
+                            stopSelf()
+                            return@launch
+                        }
                     }
                 } catch (cancelled: CancellationException) {
                     throw cancelled
@@ -83,7 +92,7 @@ class AgentMonitorService : Service() {
                     errorCount++
                     updateNotification("OpenCode 连接暂时中断", "本地服务不可达，正在重试…", ongoing = true)
                     if (errorCount >= 8) {
-                        updateNotification("后台监测已停止", "本地服务连续 8 次不可达。请重新打开 App 检查 Termux。", ongoing = false)
+                        updateNotification("后台监测已停止", "本地服务连续 8 次不可达。请重新打开 App。", ongoing = false)
                         delay(2_000)
                         stopSelf()
                         return@launch
