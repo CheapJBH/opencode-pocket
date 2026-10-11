@@ -33,11 +33,13 @@ import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Divider
+import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.rememberDrawerState
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -78,15 +80,15 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-private val Canvas = Color(0xFF101114)
-private val Panel = Color(0xFF191A20)
-private val PanelRaised = Color(0xFF22242B)
-private val Border = Color(0xFF30323A)
-private val Ink = Color(0xFFF4F5F8)
-private val SoftInk = Color(0xFFA5A8B3)
-private val Accent = Color(0xFFC4CEFF)
-private val Success = Color(0xFF87D7B1)
-private val Danger = Color(0xFFFFA6A6)
+private val Canvas = Color(0xFF000000)
+private val Panel = Color(0xFF0E0E0E)
+private val PanelRaised = Color(0xFF1C1C1C)
+private val Border = Color(0xFF262626)
+private val Ink = Color(0xFFEDEDED)
+private val SoftInk = Color(0xFF8A8A8A)
+private val Accent = Color(0xFFFFFFFF)
+private val Success = Color(0xFFB5B5B5)
+private val Danger = Color(0xFFE57373)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -119,11 +121,11 @@ private fun OpenCodePocketScreen() {
     var draft by remember { mutableStateOf("") }
     var workdir by remember { mutableStateOf(prefs.getString("workdir", null) ?: RuntimeManager.defaultWorkDir(context).absolutePath) }
     var showSettings by remember { mutableStateOf(false) }
-    var showSessions by remember { mutableStateOf(false) }
     var showModels by remember { mutableStateOf(false) }
     var modelMenuLoading by remember { mutableStateOf(false) }
     var models by remember { mutableStateOf<List<ChatModel>>(emptyList()) }
     var selectedModel by remember { mutableStateOf<ChatModel?>(null) }
+    var mode by remember { mutableStateOf(prefs.getString("agent_mode", "build") ?: "build") }
     var sessions by remember { mutableStateOf<List<OpenCodeSession>>(emptyList()) }
     val messages = remember { mutableStateListOf<ChatMessage>() }
 
@@ -212,7 +214,7 @@ private fun OpenCodePocketScreen() {
     }
 
     suspend fun createNewSession(title: String, targetApi: OpenCodeApi = api): String {
-        val session = withContext(Dispatchers.IO) { targetApi.createSession(title, selectedModel) }
+        val session = withContext(Dispatchers.IO) { targetApi.createSession(title, selectedModel, agent = mode) }
         activeSessionId = session.id
         prefs.edit().putString("session_id", session.id).apply()
         sessions = withContext(Dispatchers.IO) { api.listSessions() }
@@ -404,6 +406,69 @@ private fun OpenCodePocketScreen() {
             outline = Border
         )
     ) {
+        val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
+        ModalNavigationDrawer(
+            drawerState = drawerState,
+            drawerContainerColor = Canvas,
+            scrimColor = Color.Black.copy(alpha = 0.6f),
+            drawerContent = {
+                Column(
+                    Modifier.fillMaxHeight().width(280.dp).background(Canvas).padding(horizontal = 14.dp, vertical = 18.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text("opencode", color = Ink, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                        Spacer(Modifier.weight(1f))
+                        IconButton(onClick = { scope.launch { drawerState.close() } }, modifier = Modifier.size(30.dp)) {
+                            Icon(Icons.Default.Close, contentDescription = "关闭侧栏", tint = SoftInk, modifier = Modifier.size(18.dp))
+                        }
+                    }
+                    TextButton(onClick = {
+                        scope.launch {
+                            drawerState.close()
+                            if (connected) {
+                                try {
+                                    val id = createNewSession("新会话")
+                                    activeSessionId = id
+                                    submitting = false
+                                } catch (e: Exception) { errorText = e.message ?: "创建会话失败" }
+                            } else errorText = "请先连接本地 OpenCode"
+                        }
+                    }, contentPadding = PaddingValues(vertical = 8.dp)) {
+                        Icon(Icons.Default.Add, contentDescription = null, tint = Ink, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(8.dp)); Text("+ 新会话", color = Ink, fontSize = 13.sp)
+                    }
+                    Divider(color = Border)
+                    Text("会话 · ${sessions.size}", color = SoftInk, fontSize = 10.sp, letterSpacing = 1.5.sp, modifier = Modifier.padding(vertical = 6.dp))
+                    if (sessions.isEmpty()) {
+                        Text("尚无会话。", color = SoftInk, fontSize = 12.sp, modifier = Modifier.padding(vertical = 10.dp))
+                    } else {
+                        LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            items(sessions, key = { it.id }) { session ->
+                                Row(
+                                    Modifier.fillMaxWidth().clickable {
+                                        activeSessionId = session.id
+                                        prefs.edit().putString("session_id", session.id).apply()
+                                        submitting = false
+                                        scope.launch {
+                                            drawerState.close()
+                                            runCatching { reloadMessages(session.id) }.onFailure { errorText = it.message ?: "读取会话失败" }
+                                        }
+                                    }.padding(horizontal = 6.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text(session.title, color = if (session.id == activeSessionId) Ink else SoftInk, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                        Text(session.id.take(16) + "…", color = SoftInk.copy(alpha = 0.6f), fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    }
+                                    if (session.id == activeSessionId) Box(Modifier.size(6.dp).background(Ink))
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        ) {
         Scaffold(
             containerColor = Canvas,
             topBar = {
@@ -412,7 +477,7 @@ private fun OpenCodePocketScreen() {
                         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Box(Modifier.size(8.dp).clip(CircleShape).background(if (connected) Success else SoftInk))
-                                Text("Opencode", fontWeight = FontWeight.SemiBold, fontSize = 18.sp, color = Ink)
+                                Text("opencode", fontWeight = FontWeight.Medium, fontSize = 17.sp, color = Ink)
                             }
                             Text(
                                 if (connected) activePath.ifBlank { "本地 Agent 已连接" } else "Android · 本地开发工作区",
@@ -425,7 +490,7 @@ private fun OpenCodePocketScreen() {
                             if (connected) {
                                 scope.launch { sessions = runCatching { withContext(Dispatchers.IO) { api.listSessions() } }.getOrDefault(sessions) }
                             }
-                            showSessions = true
+                            scope.launch { drawerState.open() }
                         }) { Icon(Icons.Default.Menu, contentDescription = "会话列表", tint = Ink) }
                     },
                     actions = {
@@ -445,11 +510,19 @@ private fun OpenCodePocketScreen() {
                     Modifier.fillMaxWidth().background(Canvas).navigationBarsPadding().imePadding().padding(start = 12.dp, end = 12.dp, top = 6.dp, bottom = 8.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        AssistChip(onClick = { showModels = true; if (connected && models.isEmpty()) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        TextButton(onClick = { showModels = true; if (connected && models.isEmpty()) {
                             scope.launch { modelMenuLoading = true; models = runCatching { withContext(Dispatchers.IO) { api.listModels() } }.getOrDefault(emptyList()); modelMenuLoading = false }
-                        } }, label = { Text(selectedModel?.label ?: "OpenCode 默认模型", fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) })
-                        AssistChip(onClick = { showSettings = true }, label = { Text("${if (submitting) "任务运行中" else "本地模式"} · 设置", fontSize = 11.sp) })
+                        } }, contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp)) {
+                            Text(selectedModel?.label ?: "默认模型", color = SoftInk, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                        Text("·", color = Border, fontSize = 11.sp)
+                        TextButton(onClick = { mode = "build"; prefs.edit().putString("agent_mode", "build").apply() }, contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp)) {
+                            Text("Build", color = if (mode == "build") Ink else SoftInk, fontSize = 11.sp, fontWeight = if (mode == "build") FontWeight.SemiBold else FontWeight.Normal)
+                        }
+                        TextButton(onClick = { mode = "plan"; prefs.edit().putString("agent_mode", "plan").apply() }, contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp)) {
+                            Text("Plan", color = if (mode == "plan") Ink else SoftInk, fontSize = 11.sp, fontWeight = if (mode == "plan") FontWeight.SemiBold else FontWeight.Normal)
+                        }
                         Spacer(Modifier.weight(1f))
                         if (submitting) {
                             IconButton(onClick = { stopPrompt() }, modifier = Modifier.size(34.dp)) {
@@ -458,7 +531,7 @@ private fun OpenCodePocketScreen() {
                         }
                     }
                     Row(
-                        Modifier.fillMaxWidth().clip(RoundedCornerShape(22.dp)).background(Panel).padding(start = 14.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(4.dp)).background(Panel).padding(start = 14.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
                         verticalAlignment = Alignment.Bottom
                     ) {
                         OutlinedTextField(
@@ -467,7 +540,7 @@ private fun OpenCodePocketScreen() {
                             modifier = Modifier.weight(1f),
                             placeholder = { Text("描述你想完成的代码任务…", color = SoftInk, fontSize = 14.sp) },
                             maxLines = 6,
-                            shape = RoundedCornerShape(18.dp),
+                            shape = RoundedCornerShape(4.dp),
                             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Default),
                             colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
                                 focusedTextColor = Ink,
@@ -484,9 +557,9 @@ private fun OpenCodePocketScreen() {
                         IconButton(
                             onClick = { if (submitting) stopPrompt() else submitPrompt() },
                             enabled = draft.isNotBlank() || submitting,
-                            modifier = Modifier.padding(bottom = 2.dp).size(42.dp).clip(CircleShape).background(if (draft.isNotBlank() || submitting) Accent else PanelRaised)
+                            modifier = Modifier.padding(bottom = 2.dp).size(42.dp).clip(RoundedCornerShape(4.dp)).background(if (draft.isNotBlank() || submitting) Accent else PanelRaised)
                         ) {
-                            Icon(if (submitting) Icons.Default.Stop else Icons.Default.Send, contentDescription = if (submitting) "停止" else "发送", tint = if (draft.isNotBlank() || submitting) Color(0xFF141722) else SoftInk)
+                            Icon(if (submitting) Icons.Default.Stop else Icons.Default.Send, contentDescription = if (submitting) "停止" else "发送", tint = if (draft.isNotBlank() || submitting) Color(0xFF000000) else SoftInk)
                         }
                     }
                     Text("本地 API：127.0.0.1:4096   ·   内置运行时，无需 Termux", color = SoftInk.copy(alpha = 0.75f), fontSize = 10.sp)
@@ -508,57 +581,19 @@ private fun OpenCodePocketScreen() {
                     Text(statusText, color = SoftInk, fontSize = 11.sp, lineHeight = 16.sp)
                     Spacer(Modifier.height(9.dp))
                     if (errorText.isNotBlank()) {
-                        Surface(color = Color(0xFF351D24), shape = RoundedCornerShape(12.dp), border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF6D303D))) {
-                            Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Icon(Icons.Default.Close, contentDescription = null, tint = Danger, modifier = Modifier.size(18.dp))
-                                Column(Modifier.weight(1f)) {
-                                    Text("需要处理", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = Danger)
-                                    Spacer(Modifier.height(3.dp))
-                                    Text(errorText, color = Ink, fontSize = 12.sp, lineHeight = 17.sp)
-                                }
-                                IconButton(onClick = { errorText = "" }, modifier = Modifier.size(22.dp)) { Icon(Icons.Default.Close, contentDescription = "关闭错误", tint = SoftInk) }
-                            }
+                        Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(errorText, color = Danger, fontSize = 12.sp, lineHeight = 17.sp, modifier = Modifier.weight(1f))
+                            IconButton(onClick = { errorText = "" }, modifier = Modifier.size(22.dp)) { Icon(Icons.Default.Close, contentDescription = "关闭错误", tint = SoftInk) }
                         }
-                        Spacer(Modifier.height(8.dp))
+                        Divider(color = Border)
+                        Spacer(Modifier.height(2.dp))
                     }
                 }
 
                 if (messages.isEmpty()) {
                     item {
-                        Spacer(Modifier.height(22.dp))
-                        Text("让 Agent 来处理。", fontSize = 27.sp, fontWeight = FontWeight.SemiBold, color = Ink, lineHeight = 32.sp)
-                        Spacer(Modifier.height(8.dp))
-                        Text("直接描述任务。OpenCode 将在工作目录中读写文件、运行工具，并把真实执行记录返回到聊天里。", color = SoftInk, fontSize = 14.sp, lineHeight = 21.sp)
-                        Spacer(Modifier.height(24.dp))
-                        Text("可以从这些任务开始", color = SoftInk, fontSize = 12.sp, fontWeight = FontWeight.Medium)
-                        Spacer(Modifier.height(10.dp))
-                    }
-                    items(listOf(
-                        "分析当前项目结构，告诉我从哪里开始。",
-                        "检查项目里的错误，先给出修复计划。",
-                        "做一次移动端 UI 适配检查，并修改明显的问题。"
-                    )) { suggestion ->
-                        Surface(
-                            color = Panel,
-                            shape = RoundedCornerShape(14.dp),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, Border),
-                            modifier = Modifier.fillMaxWidth().clickable { draft = suggestion }
-                        ) {
-                            Row(Modifier.padding(horizontal = 14.dp, vertical = 13.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Text(suggestion, modifier = Modifier.weight(1f), color = Ink, fontSize = 13.sp, lineHeight = 18.sp)
-                                Icon(Icons.Default.ChevronRight, contentDescription = "填入输入框", tint = SoftInk)
-                            }
-                        }
-                    }
-                    item {
-                        Spacer(Modifier.height(8.dp))
-                        Surface(color = Panel.copy(alpha = 0.7f), shape = RoundedCornerShape(14.dp)) {
-                            Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                                Text("第一次使用？", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                                Text("点右上角连接按钮，App 会自动准备运行时。首次需在设置里填写 OpenRouter Key。", color = SoftInk, fontSize = 12.sp, lineHeight = 18.sp)
-                                TextButton(onClick = { showSettings = true }, contentPadding = PaddingValues(0.dp)) { Text("打开本地运行设置 →", color = Accent) }
-                            }
-                        }
+                        Spacer(Modifier.height(56.dp))
+                        Text(if (connected) "输入任务开始" else "正在连接…", color = SoftInk, fontSize = 13.sp)
                     }
                 } else {
                     items(messages, key = { it.id }) { message -> MessageBubble(message) }
@@ -572,6 +607,7 @@ private fun OpenCodePocketScreen() {
                     }
                 }
             }
+        }
         }
     }
 
@@ -659,57 +695,6 @@ private fun OpenCodePocketScreen() {
         )
     }
 
-    if (showSessions) {
-        AlertDialog(
-            onDismissRequest = { showSessions = false },
-            title = { Text("会话", color = Ink) },
-            text = {
-                Column(Modifier.heightIn(max = 420.dp)) {
-                    TextButton(onClick = {
-                        showSessions = false
-                        if (connected) scope.launch {
-                            try {
-                                val id = createNewSession("新会话")
-                                activeSessionId = id
-                                submitting = false
-                            } catch (e: Exception) { errorText = e.message ?: "创建会话失败" }
-                        } else errorText = "请先连接本地 OpenCode"
-                    }) {
-                        Icon(Icons.Default.Add, contentDescription = null, tint = Accent)
-                        Spacer(Modifier.width(8.dp)); Text("新建会话", color = Accent)
-                    }
-                    Divider(color = Border)
-                    if (sessions.isEmpty()) {
-                        Text("尚无会话，连接本地 OpenCode 后会显示真实会话列表。", color = SoftInk, fontSize = 12.sp, modifier = Modifier.padding(vertical = 14.dp))
-                    } else {
-                        LazyColumn {
-                            items(sessions, key = { it.id }) { session ->
-                                Row(
-                                    Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).clickable {
-                                        activeSessionId = session.id
-                                        prefs.edit().putString("session_id", session.id).apply()
-                                        showSessions = false
-                                        submitting = false
-                                        scope.launch { runCatching { reloadMessages(session.id) }.onFailure { errorText = it.message ?: "读取会话失败" } }
-                                    }.padding(horizontal = 8.dp, vertical = 12.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Column(Modifier.weight(1f)) {
-                                        Text(session.title, color = Ink, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                        Text(session.id, color = SoftInk, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                    }
-                                    if (session.id == activeSessionId) Icon(Icons.Default.Check, contentDescription = "当前会话", tint = Success, modifier = Modifier.size(17.dp))
-                                }
-                            }
-                        }
-                    }
-                }
-            },
-            confirmButton = { TextButton(onClick = { showSessions = false }) { Text("关闭", color = Accent) } },
-            containerColor = Panel
-        )
-    }
-
     if (showModels) {
         AlertDialog(
             onDismissRequest = { showModels = false },
@@ -757,17 +742,17 @@ private fun OpenCodePocketScreen() {
 @Composable
 private fun MessageBubble(message: ChatMessage) {
     val user = message.role == "user"
-    val bubbleColor = if (user) Color(0xFF293044) else Panel
+    val bubbleColor = if (user) PanelRaised else Color.Transparent
     Column(Modifier.fillMaxWidth(), horizontalAlignment = if (user) Alignment.End else Alignment.Start) {
         Text(if (user) "你" else "Opencode", color = if (user) Accent else SoftInk, fontSize = 10.sp, letterSpacing = 1.1.sp, fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.height(5.dp))
         Surface(
             color = bubbleColor,
             shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomEnd = if (user) 5.dp else 16.dp, bottomStart = if (user) 16.dp else 5.dp),
-            border = if (user) null else androidx.compose.foundation.BorderStroke(1.dp, Border.copy(alpha = 0.8f)),
+            border = null,
             modifier = Modifier.widthIn(max = 560.dp)
         ) {
-            Column(Modifier.padding(horizontal = 14.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(if (user) Modifier.padding(horizontal = 14.dp, vertical = 12.dp) else Modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 val text = message.displayText
                 if (text.isNotBlank()) Text(text, color = Ink, fontSize = 14.sp, lineHeight = 21.sp)
                 if (text.isBlank() && message.role == "assistant") Text("收到执行结果…", color = SoftInk, fontSize = 12.sp)

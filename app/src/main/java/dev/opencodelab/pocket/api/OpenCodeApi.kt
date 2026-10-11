@@ -134,8 +134,9 @@ class OpenCodeApi(baseUrl: String = DEFAULT_BASE_URL, private val password: Stri
         }
     }
 
-    suspend fun createSession(title: String, model: ChatModel? = null): OpenCodeSession {
+    suspend fun createSession(title: String, model: ChatModel? = null, agent: String? = null): OpenCodeSession {
         val body = JSONObject().put("title", title.take(80).ifBlank { "新会话" })
+        if (!agent.isNullOrBlank()) body.put("agent", agent)
         if (model != null) {
             body.put("model", JSONObject()
                 .put("id", model.modelID)
