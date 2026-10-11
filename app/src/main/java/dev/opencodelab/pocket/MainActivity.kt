@@ -162,6 +162,31 @@ private fun OpenCodePocketScreen() {
         mutableStateOf(saved)
     }
 
+    val reportError: (String) -> Unit = { msg ->
+        errorText = msg
+        Thread {
+            try {
+                val bytes = msg.toByteArray()
+                if (android.os.Build.VERSION.SDK_INT >= 29) {
+                    val values = android.content.ContentValues().apply {
+                        put(android.provider.MediaStore.Downloads.DISPLAY_NAME, "opencode-error.log")
+                        put(android.provider.MediaStore.Downloads.MIME_TYPE, "text/plain")
+                        put(android.provider.MediaStore.Downloads.RELATIVE_PATH, android.os.Environment.DIRECTORY_DOWNLOADS)
+                        put(android.provider.MediaStore.Downloads.IS_PENDING, 1)
+                    }
+                    val uri = contentResolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                    uri?.let {
+                        contentResolver.openOutputStream(it)?.use { os -> os.write(bytes) }
+                        values.clear()
+                        values.put(android.provider.MediaStore.Downloads.IS_PENDING, 0)
+                        contentResolver.update(it, values, null, null)
+                    }
+                }
+            } catch (_: Throwable) {
+            }
+        }.start()
+    }
+
     val reloadMessages: suspend (String) -> Unit = { id ->
         val loaded = withContext(Dispatchers.IO) { api.listMessages(id) }
         messages.clear()
@@ -302,13 +327,13 @@ private fun OpenCodePocketScreen() {
                             }
                         }
                     } catch (e: Exception) {
-                        errorText = "运行时准备失败：${e.message}。请检查网络后重试。"
+                        reportError("运行时准备失败：${e.message}")
                         return@launch
                     }
                 }
                 // 3. 检查模型配置
                 if (!RuntimeManager.hasConfig(context)) {
-                    errorText = "还没有配置模型。打开设置，一键用 opencode 免费模型。"
+                    reportError("还没有配置模型。打开设置，一键用 opencode 免费模型。")
                     showSettings = true
                     return@launch
                 }
@@ -327,7 +352,7 @@ private fun OpenCodePocketScreen() {
                     }
                     ServeHolder.process = proc
                 } catch (e: Exception) {
-                    errorText = "启动失败：${e.message ?: e.javaClass.simpleName}"
+                    reportError("启动失败：${e.message ?: e.javaClass.simpleName}")
                     return@launch
                 }
                 // 5. 轮询等 serve 就绪
@@ -359,7 +384,7 @@ private fun OpenCodePocketScreen() {
                 }
                 if (!started) {
                     connected = false
-                    errorText = "服务 18 秒内未就绪。请重试，或检查存储空间是否充足。"
+                    reportError("服务 18 秒内未就绪。请重试，或检查存储空间是否充足。")
                 }
             } finally {
                 loading = false
@@ -696,6 +721,14 @@ private fun OpenCodePocketScreen() {
                     Divider(color = Border)
                     Text("后台运行", color = Ink, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
                     Text("任务开始后 App 会使用前台服务与部分唤醒锁保持运行。请允许本 App 后台运行并忽略电池优化。", color = SoftInk, fontSize = 12.sp, lineHeight = 17.sp)
+                    Button(onClick = {
+                        try {
+                            val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:${context.packageName}"))
+                            context.startActivity(intent)
+                        } catch (e: Exception) { errorText = "无法打开权限页面：${e.message}" }
+                    }, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = PanelRaised, contentColor = Ink)) {
+                        Text(if (android.os.Environment.isExternalStorageManager()) "✓ 已授予所有文件访问" else "授予所有文件访问权限")
+                    }
                     Button(onClick = {
                         try {
                             val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).setData(Uri.parse("package:${context.packageName}"))

@@ -110,10 +110,10 @@ object RuntimeManager {
             // 3. 解压（只提取需要的两个文件）
             onProgress(0.78f, "正在解压…")
             try { extractNeeded(tmpPkg, dir) } catch (t: Throwable) { throw RuntimeException("解压失败：${t.message}") }
-            // 4. 权限
+            // 4. 权限（File.setExecutable 在部分 ROM 不生效，用底层 Os.chmod 硬设 0755）
+            hardenPermissions(context)
             val bin = binFile(context)
-            bin.setExecutable(true, false)
-            bin.setReadable(true, false)
+            if (!bin.canExecute()) throw RuntimeException("运行时文件不可执行（权限被系统拒绝）")
             versionFile(context).writeText(RUNTIME_VERSION)
             onProgress(1f, "运行时就绪")
         } finally {
@@ -197,6 +197,27 @@ object RuntimeManager {
         }
     }
 
+    /** 底层 chmod 0755：bin/so 及全部父目录（穿越目录也要 x 权限）。 */
+    private fun hardenPermissions(context: Context) {
+        val mode = 0x1ED // 0755
+        val targets = listOf(
+            runtimeDir(context),
+            File(runtimeDir(context), "bin"),
+            File(runtimeDir(context), "lib"),
+            File(runtimeDir(context), "lib/opencode"),
+            binFile(context),
+            soFile(context)
+        )
+        for (f in targets) {
+            try {
+                android.system.Os.chmod(f.absolutePath, mode)
+            } catch (_: Throwable) {
+            }
+            f.setExecutable(true, false)
+            f.setReadable(true, false)
+        }
+    }
+
     /** 生成随机 serve 密码。 */
     fun newPassword(): String = UUID.randomUUID().toString().replace("-", "") +
         UUID.randomUUID().toString().replace("-", "").take(8)
@@ -212,7 +233,8 @@ object RuntimeManager {
         port: Int = 4096
     ): Process {
         val bin = binFile(context)
-        require(bin.canExecute()) { "运行时未安装" }
+        hardenPermissions(context)
+        require(bin.canExecute()) { "运行时不可执行（${bin.absolutePath}）" }
         workDir.mkdirs()
         val home = ocHome(context).apply { mkdirs() }
         val tmp = ocTmp(context).apply { mkdirs() }
