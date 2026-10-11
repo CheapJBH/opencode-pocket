@@ -174,12 +174,13 @@ private fun OpenCodePocketScreen() {
                         put(android.provider.MediaStore.Downloads.RELATIVE_PATH, android.os.Environment.DIRECTORY_DOWNLOADS)
                         put(android.provider.MediaStore.Downloads.IS_PENDING, 1)
                     }
-                    val uri = contentResolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                    val resolver = context.contentResolver
+                    val uri = resolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
                     uri?.let {
-                        contentResolver.openOutputStream(it)?.use { os -> os.write(bytes) }
+                        resolver.openOutputStream(it)?.use { os -> os.write(bytes) }
                         values.clear()
                         values.put(android.provider.MediaStore.Downloads.IS_PENDING, 0)
-                        contentResolver.update(it, values, null, null)
+                        resolver.update(it, values, null, null)
                     }
                 }
             } catch (_: Throwable) {
