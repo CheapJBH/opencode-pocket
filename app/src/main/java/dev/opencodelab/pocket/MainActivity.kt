@@ -93,9 +93,27 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            val stack = android.util.Log.getStackTraceString(throwable).take(20000)
             try {
-                val stack = android.util.Log.getStackTraceString(throwable).take(6000)
                 openFileOutput("crash.log", Context.MODE_PRIVATE).use { it.write(stack.toByteArray()) }
+            } catch (_: Exception) {
+            }
+            try {
+                if (android.os.Build.VERSION.SDK_INT >= 29) {
+                    val values = android.content.ContentValues().apply {
+                        put(android.provider.MediaStore.Downloads.DISPLAY_NAME, "opencode-crash.log")
+                        put(android.provider.MediaStore.Downloads.MIME_TYPE, "text/plain")
+                        put(android.provider.MediaStore.Downloads.RELATIVE_PATH, android.os.Environment.DIRECTORY_DOWNLOADS)
+                        put(android.provider.MediaStore.Downloads.IS_PENDING, 1)
+                    }
+                    val uri = contentResolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                    uri?.let {
+                        contentResolver.openOutputStream(it)?.use { os -> os.write(stack.toByteArray()) }
+                        values.clear()
+                        values.put(android.provider.MediaStore.Downloads.IS_PENDING, 0)
+                        contentResolver.update(it, values, null, null)
+                    }
+                }
             } catch (_: Exception) {
             }
             defaultHandler?.uncaughtException(thread, throwable)
