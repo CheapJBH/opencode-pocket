@@ -174,10 +174,6 @@ private fun OpenCodePocketScreen() {
         }
     }
 
-    LaunchedEffect(Unit) {
-        connectOrStartEngine()
-    }
-
     LaunchedEffect(activeSessionId, submitting) {
         val id = activeSessionId ?: return@LaunchedEffect
         if (!submitting) return@LaunchedEffect
@@ -389,6 +385,10 @@ private fun OpenCodePocketScreen() {
                 errorText = e.message ?: "停止任务失败"
             }
         }
+    }
+
+    LaunchedEffect(Unit) {
+        connectOrStartEngine()
     }
 
     MaterialTheme(
