@@ -5,3 +5,5 @@ build/
 app/build/
 *.iml
 .DS_Store
+# CI 构建时下载打进 APK 的运行时包（65MB，不进仓库）
+app/src/main/assets/

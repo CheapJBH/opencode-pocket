@@ -584,7 +584,7 @@ private fun OpenCodePocketScreen() {
             title = { Text("本地运行设置", color = Ink) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("内置 OpenCode ${RuntimeManager.RUNTIME_VERSION}，首次启动自动下载运行时（约 65MB）。Server 只监听 127.0.0.1:4096，随机密码保护。", color = SoftInk, fontSize = 12.sp, lineHeight = 17.sp)
+                    Text("内置 OpenCode ${RuntimeManager.RUNTIME_VERSION}，运行时已打进安装包，无需下载。Server 只监听 127.0.0.1:4096，随机密码保护。", color = SoftInk, fontSize = 12.sp, lineHeight = 17.sp)
                     OutlinedTextField(
                         value = draftWorkdir,
                         onValueChange = { draftWorkdir = it },

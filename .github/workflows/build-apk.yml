@@ -27,6 +27,11 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.11.1'
+      - name: Fetch bundled runtime (built into APK, no download on device)
+        run: |
+          mkdir -p app/src/main/assets
+          curl -sSL -o app/src/main/assets/runtime.pkg.tar.xz "https://github.com/Hope2333/opencode-termux/releases/download/Push261005/opencode-2.0.22-1-aarch64.pkg.tar.xz"
+          echo "9830eb45f64b5caa1b797c6a399eab29a528a4ba3273cc4ad4430700cd877cbf  app/src/main/assets/runtime.pkg.tar.xz" | sha256sum -c -
       - name: Build debug APK
         run: gradle --no-daemon assembleDebug
       - name: Upload APK

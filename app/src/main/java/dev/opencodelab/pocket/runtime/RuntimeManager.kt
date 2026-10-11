@@ -28,6 +28,9 @@ object RuntimeManager {
         "9830eb45f64b5caa1b797c6a399eab29a528a4ba3273cc4ad4430700cd877cbf"
     const val RUNTIME_VERSION = "2.0.22"
 
+    /** 打进 APK assets 的运行时包文件名（CI 构建时下载，见 workflow）。 */
+    private const val ASSET_NAME = "runtime.pkg.tar.xz"
+
     private const val BIN_REL = "data/data/com.termux/files/usr/bin/opencode"
     private const val SO_REL = "data/data/com.termux/files/usr/lib/opencode/libopencode-crhandler.so"
 
@@ -55,7 +58,7 @@ object RuntimeManager {
 
     data class DownloadProgress(val doneBytes: Long, val totalBytes: Long)
 
-    /** 下载 + SHA256 校验 + 解压 + chmod，回调进度（0..1，-1 表示不确定）。 */
+    /** 从 APK 内置包安装（零网络）→ 回退到 URL 下载。SHA256 校验 + 解压 + chmod。 */
     suspend fun install(
         context: Context,
         onProgress: (fraction: Float, stage: String) -> Unit
@@ -63,11 +66,24 @@ object RuntimeManager {
         val dir = runtimeDir(context)
         val tmpPkg = File(context.cacheDir, "oc-runtime.pkg.tar.xz")
         try {
-            // 1. 下载
-            onProgress(0f, "正在下载运行时（约 65MB）…")
-            download(RUNTIME_URL, tmpPkg) { done, total ->
-                val f = if (total > 0) done.toFloat() / total * 0.7f else -1f
-                onProgress(f, "正在下载运行时 ${done / 1024 / 1024}MB…")
+            // 1. 包来源：APK 内置优先，否则下载
+            var bundled = false
+            try {
+                context.assets.open(ASSET_NAME).use { input ->
+                    FileOutputStream(tmpPkg).use { out -> input.copyTo(out) }
+                }
+                bundled = tmpPkg.length() > 1_000_000
+            } catch (_: Exception) {
+                bundled = false
+            }
+            if (bundled) {
+                onProgress(0.5f, "正在准备内置运行时…")
+            } else {
+                onProgress(0f, "正在下载运行时（约 65MB）…")
+                download(RUNTIME_URL, tmpPkg) { done, total ->
+                    val f = if (total > 0) done.toFloat() / total * 0.7f else -1f
+                    onProgress(f, "正在下载运行时 ${done / 1024 / 1024}MB…")
+                }
             }
             // 2. 校验
             onProgress(0.72f, "正在校验完整性…")
