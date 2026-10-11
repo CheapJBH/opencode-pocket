@@ -308,7 +308,7 @@ private fun OpenCodePocketScreen() {
                 }
                 // 3. 检查模型配置
                 if (!RuntimeManager.hasConfig(context)) {
-                    errorText = "还没有配置模型。请在设置里填写 OpenRouter API Key。"
+                    errorText = "还没有配置模型。打开设置，一键用 opencode 免费模型。"
                     showSettings = true
                     return@launch
                 }
@@ -656,10 +656,19 @@ private fun OpenCodePocketScreen() {
                     )
                     Text("修改目录后需重启服务生效（点右上角刷新按钮）。", color = SoftInk, fontSize = 11.sp, lineHeight = 16.sp)
                     Divider(color = Border)
-                    Text("模型配置 · OpenRouter", color = Ink, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                    if (keySaved) {
-                        Text("已保存 OpenRouter Key（默认 deepseek-chat）。如需更换请重新填写。", color = Success, fontSize = 12.sp)
+                    Text("模型", color = Ink, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                    Button(onClick = {
+                        try {
+                            RuntimeManager.writeFreeConfig(context)
+                            keySaved = true
+                            errorText = ""
+                            showSettings = false
+                            connectOrStartEngine()
+                        } catch (e: Exception) { errorText = "配置失败：${e.message}" }
+                    }, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = PanelRaised, contentColor = Ink)) {
+                        Text("使用 opencode 免费模型（big-pickle，无需 key）")
                     }
+                    Text("或填写 OpenRouter Key 用 deepseek-chat：", color = SoftInk, fontSize = 12.sp)
                     OutlinedTextField(
                         value = draftKey,
                         onValueChange = { draftKey = it },

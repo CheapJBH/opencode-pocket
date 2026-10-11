@@ -30,6 +30,7 @@ object RuntimeManager {
 
     /** 打进 APK assets 的运行时包文件名（CI 构建时下载，见 workflow）。 */
     private const val ASSET_NAME = "runtime.pkg.tar.xz"
+    private const val CA_ASSET = "ca-cert.pem"
 
     private const val BIN_REL = "data/data/com.termux/files/usr/bin/opencode"
     private const val SO_REL = "data/data/com.termux/files/usr/lib/opencode/libopencode-crhandler.so"
@@ -49,6 +50,21 @@ object RuntimeManager {
 
     fun configFile(context: Context): File =
         File(ocHome(context), ".config/opencode/opencode.json")
+
+    fun caFile(context: Context): File = File(runtimeDir(context), "ca/cert.pem")
+
+    /** Android 无系统 CA，bun binary 会把正常证书判成自签。把 assets 里的 CA bundle 落盘供 SSL_CERT_FILE 用。 */
+    private fun ensureCa(context: Context) {
+        val out = caFile(context)
+        if (out.exists() && out.length() > 1000) return
+        try {
+            out.parentFile?.mkdirs()
+            context.assets.open(CA_ASSET).use { input ->
+                java.io.FileOutputStream(out).use { output -> input.copyTo(output) }
+            }
+        } catch (_: Throwable) {
+        }
+    }
 
     fun isInstalled(context: Context): Boolean {
         val bin = binFile(context)
@@ -213,6 +229,9 @@ object RuntimeManager {
         // RUNPATH 已含 $ORIGIN/../lib/opencode，LD_LIBRARY_PATH 属于双保险
         pb.environment()["LD_LIBRARY_PATH"] =
             File(runtimeDir(context), "lib/opencode").absolutePath
+        ensureCa(context)
+        val ca = caFile(context)
+        if (ca.exists()) pb.environment()["SSL_CERT_FILE"] = ca.absolutePath
         pb.redirectErrorStream(true)
         return pb.start()
     }
@@ -236,6 +255,16 @@ object RuntimeManager {
         f.writeText(cfg.toString(2))
     }
 
+    /** opencode 免费模型（big-pickle 等），无需任何 key。已在本机干净环境验证 serve+API 真实回复。 */
+    fun writeFreeConfig(context: Context) {
+        val cfg = JSONObject()
+            .put("model", "opencode/big-pickle")
+            .put("small_model", "opencode/big-pickle")
+        val f = configFile(context)
+        f.parentFile?.mkdirs()
+        f.writeText(cfg.toString(2))
+    }
+
     fun hasConfig(context: Context): Boolean =
-        configFile(context).takeIf { it.exists() }?.readText()?.contains("apiKey") == true
+        configFile(context).takeIf { it.exists() }?.length() ?: 0L > 10L
 }
