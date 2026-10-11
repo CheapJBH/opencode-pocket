@@ -38,6 +38,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Divider
 import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -409,9 +410,9 @@ private fun OpenCodePocketScreen() {
         val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
         ModalNavigationDrawer(
             drawerState = drawerState,
-            drawerContainerColor = Canvas,
             scrimColor = Color.Black.copy(alpha = 0.6f),
             drawerContent = {
+                ModalDrawerSheet(drawerContainerColor = Canvas) {
                 Column(
                     Modifier.fillMaxHeight().width(280.dp).background(Canvas).padding(horizontal = 14.dp, vertical = 18.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp)
@@ -466,6 +467,7 @@ private fun OpenCodePocketScreen() {
                             }
                         }
                     }
+                }
                 }
             }
         ) {
