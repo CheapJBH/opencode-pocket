@@ -141,11 +141,12 @@ private fun OpenCodePocketScreen() {
     var sessions by remember { mutableStateOf<List<OpenCodeSession>>(emptyList()) }
     val messages = remember { mutableStateListOf<ChatMessage>() }
     var crashReport by remember {
-        mutableStateOf(
-            runCatching {
-                openFileInput("crash.log").use { it.readBytes().toString(Charsets.UTF_8) }
-            }.getOrNull()?.takeIf { it.isNotBlank() }
-        )
+        val saved: String? = try {
+            context.openFileInput("crash.log").use { it.readBytes().toString(Charsets.UTF_8) }.takeIf { it.isNotBlank() }
+        } catch (_: Exception) {
+            null
+        }
+        mutableStateOf(saved)
     }
 
     val reloadMessages: suspend (String) -> Unit = { id ->
