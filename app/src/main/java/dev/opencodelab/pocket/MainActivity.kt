@@ -153,7 +153,7 @@ private fun OpenCodePocketScreen() {
                 "本地运行中 · 已启用 API 密码保护 · $activePath"
             }
             errorText = if (serverPassword.isNullOrBlank()) {
-                "安全提醒：检测到无密码的本地 OpenCode Server。同一台手机上的其他应用也可能尝试连接该端口；建议停止它，并由 OpenCode Pocket 重新启动受密码保护的服务。"
+                "安全提醒：检测到无密码的本地 OpenCode Server。同一台手机上的其他应用也可能尝试连接该端口；建议停止它，并由 Opencode 重新启动受密码保护的服务。"
             } else ""
             sessions = withContext(Dispatchers.IO) { api.listSessions() }
             models = withContext(Dispatchers.IO) { api.listModels() }
@@ -175,7 +175,7 @@ private fun OpenCodePocketScreen() {
     }
 
     LaunchedEffect(Unit) {
-        refreshConnection(false)
+        connectOrStartEngine()
     }
 
     LaunchedEffect(activeSessionId, submitting) {
@@ -215,13 +215,25 @@ private fun OpenCodePocketScreen() {
         }
     }
 
-    suspend fun createNewSession(title: String): String {
-        val session = withContext(Dispatchers.IO) { api.createSession(title, selectedModel) }
+    suspend fun createNewSession(title: String, targetApi: OpenCodeApi = api): String {
+        val session = withContext(Dispatchers.IO) { targetApi.createSession(title, selectedModel) }
         activeSessionId = session.id
         prefs.edit().putString("session_id", session.id).apply()
         sessions = withContext(Dispatchers.IO) { api.listSessions() }
         messages.clear()
         return session.id
+    }
+
+    /** 打开即用：没有可用会话就自动建一个，失败不抛（只打状态）。 */
+    suspend fun ensureSession(targetApi: OpenCodeApi = api) {
+        val savedId = activeSessionId
+        if (savedId != null && sessions.any { it.id == savedId }) return
+        try {
+            createNewSession("新会话", targetApi)
+            statusText = "就绪 · 已自动创建新会话，直接输入开聊"
+        } catch (_: Exception) {
+            statusText = "已连接 · 会话列表为空，发消息时会自动创建"
+        }
     }
 
     fun connectOrStartEngine() {
@@ -240,7 +252,11 @@ private fun OpenCodePocketScreen() {
                     restoreSavedModel()
                     statusText = "已连接 · $activePath"
                     val savedId = activeSessionId
-                    if (savedId != null && sessions.any { it.id == savedId }) reloadMessages(savedId)
+                    if (savedId != null && sessions.any { it.id == savedId }) {
+                        reloadMessages(savedId)
+                    } else {
+                        ensureSession()
+                    }
                     return@launch
                 } catch (_: Exception) {
                     // 无服务，继续走启动流程
@@ -301,6 +317,8 @@ private fun OpenCodePocketScreen() {
                         if (savedId != null && sessions.any { it.id == savedId }) {
                             val loaded = withContext(Dispatchers.IO) { protectedApi.listMessages(savedId) }
                             messages.clear(); messages.addAll(loaded)
+                        } else {
+                            ensureSession(protectedApi)
                         }
                         started = true
                         break
@@ -394,7 +412,7 @@ private fun OpenCodePocketScreen() {
                         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Box(Modifier.size(8.dp).clip(CircleShape).background(if (connected) Success else SoftInk))
-                                Text("OpenCode", fontWeight = FontWeight.SemiBold, fontSize = 18.sp, color = Ink)
+                                Text("Opencode", fontWeight = FontWeight.SemiBold, fontSize = 18.sp, color = Ink)
                             }
                             Text(
                                 if (connected) activePath.ifBlank { "本地 Agent 已连接" } else "Android · 本地开发工作区",
@@ -597,7 +615,9 @@ private fun OpenCodePocketScreen() {
                                 keySaved = true
                                 draftKey = ""
                                 errorText = ""
-                                statusText = "模型已配置，可以连接启动了"
+                                statusText = "模型已配置，正在启动…"
+                                showSettings = false
+                                connectOrStartEngine()
                             } catch (e: Exception) { errorText = "保存失败：${e.message}" }
                         }
                     }, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = PanelRaised, contentColor = Ink)) {
@@ -622,7 +642,7 @@ private fun OpenCodePocketScreen() {
                     }, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = PanelRaised, contentColor = Ink)) {
                         Icon(Icons.Default.Settings, contentDescription = null)
                         Spacer(Modifier.width(8.dp))
-                        Text("打开 OpenCode Pocket 应用权限")
+                        Text("打开 Opencode 应用权限")
                     }
 
                 }
@@ -739,7 +759,7 @@ private fun MessageBubble(message: ChatMessage) {
     val user = message.role == "user"
     val bubbleColor = if (user) Color(0xFF293044) else Panel
     Column(Modifier.fillMaxWidth(), horizontalAlignment = if (user) Alignment.End else Alignment.Start) {
-        Text(if (user) "你" else "OPENCODE", color = if (user) Accent else SoftInk, fontSize = 10.sp, letterSpacing = 1.1.sp, fontWeight = FontWeight.SemiBold)
+        Text(if (user) "你" else "Opencode", color = if (user) Accent else SoftInk, fontSize = 10.sp, letterSpacing = 1.1.sp, fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.height(5.dp))
         Surface(
             color = bubbleColor,
