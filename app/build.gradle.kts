@@ -12,8 +12,8 @@ android {
         applicationId = "dev.opencodelab.pocket"
         minSdk = 28
         targetSdk = 35
-        versionCode = 5
-        versionName = "0.1.0-alpha5"
+        versionCode = 6
+        versionName = "0.1.0-alpha6"
     }
 
     buildFeatures { compose = true }
@@ -35,5 +35,6 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
     implementation("org.apache.commons:commons-compress:1.27.1")
+    implementation("org.tukaani:xz:1.9")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

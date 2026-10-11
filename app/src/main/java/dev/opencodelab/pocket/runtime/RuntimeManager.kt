@@ -73,7 +73,7 @@ object RuntimeManager {
                     FileOutputStream(tmpPkg).use { out -> input.copyTo(out) }
                 }
                 bundled = tmpPkg.length() > 1_000_000
-            } catch (_: Exception) {
+            } catch (_: Throwable) {
                 bundled = false
             }
             if (bundled) {
@@ -87,13 +87,13 @@ object RuntimeManager {
             }
             // 2. 校验
             onProgress(0.72f, "正在校验完整性…")
-            val actual = sha256(tmpPkg)
+            val actual = try { sha256(tmpPkg) } catch (t: Throwable) { throw RuntimeException("校验失败：${t.message}") }
             if (!actual.equals(RUNTIME_SHA256, ignoreCase = true)) {
                 throw RuntimeException("校验失败：文件可能损坏，请重试")
             }
             // 3. 解压（只提取需要的两个文件）
             onProgress(0.78f, "正在解压…")
-            extractNeeded(tmpPkg, dir)
+            try { extractNeeded(tmpPkg, dir) } catch (t: Throwable) { throw RuntimeException("解压失败：${t.message}") }
             // 4. 权限
             val bin = binFile(context)
             bin.setExecutable(true, false)
