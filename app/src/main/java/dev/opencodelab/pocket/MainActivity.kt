@@ -94,6 +94,17 @@ private val Danger = Color(0xFFE57373)
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            try {
+                val stack = android.util.Log.getStackTraceString(throwable).take(6000)
+                openFileOutput("crash.log", Context.MODE_PRIVATE).use {
+                    it.write("$stack".toByteArray())
+                }
+            } catch (_: Exception) {
+            }
+            defaultHandler?.uncaughtException(thread, throwable)
+        }
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1501)
         }
@@ -129,6 +140,13 @@ private fun OpenCodePocketScreen() {
     var mode by remember { mutableStateOf(prefs.getString("agent_mode", "build") ?: "build") }
     var sessions by remember { mutableStateOf<List<OpenCodeSession>>(emptyList()) }
     val messages = remember { mutableStateListOf<ChatMessage>() }
+    var crashReport by remember {
+        mutableStateOf(
+            runCatching {
+                openFileInput("crash.log").use { it.readBytes().toString(Charsets.UTF_8) }
+            }.getOrNull()?.takeIf { it.isNotBlank() }
+        )
+    }
 
     val reloadMessages: suspend (String) -> Unit = { id ->
         val loaded = withContext(Dispatchers.IO) { api.listMessages(id) }
@@ -611,6 +629,32 @@ private fun OpenCodePocketScreen() {
             }
         }
         }
+    }
+
+    crashReport?.let { report ->
+        AlertDialog(
+            onDismissRequest = { },
+            title = { Text("上次启动崩溃了", color = Ink) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("把下面这段发给开发者，一次就能定位。", color = SoftInk, fontSize = 12.sp)
+                    Surface(color = PanelRaised) {
+                        androidx.compose.foundation.layout.Box(Modifier.heightIn(max = 320.dp)) {
+                            LazyColumn(Modifier.padding(8.dp)) {
+                                item { Text(report, color = Ink, fontSize = 10.sp, lineHeight = 14.sp) }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    context.deleteFile("crash.log")
+                    crashReport = null
+                }) { Text("清除", color = Accent) }
+            },
+            containerColor = Panel
+        )
     }
 
     if (showSettings) {
