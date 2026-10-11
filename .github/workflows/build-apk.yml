@@ -23,6 +23,11 @@ jobs:
           SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
           yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
           "$SDKMANAGER" "platforms;android-35" "build-tools;35.0.0"
+      - name: Reuse debug keystore (stable signing across builds)
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: debug-keystore-v1
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
