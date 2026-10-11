@@ -20,8 +20,9 @@ jobs:
           java-version: '17'
       - name: Install SDK platform and build tools
         run: |
-          yes | sdkmanager --licenses > /dev/null 2>&1 || true
-          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+          SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+          "$SDKMANAGER" "platforms;android-35" "build-tools;35.0.0"
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
